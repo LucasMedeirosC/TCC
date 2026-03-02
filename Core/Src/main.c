@@ -64,6 +64,10 @@ static volatile uint16_t adc_raw[TOTAL_ADC] = { 0 };
 volatile float adc_in_voltage = 0.0f;
 volatile uint16_t adc_debug = 0;
 
+bool afundamento = false;
+uint32_t inicio;
+int indexServer = 0;
+
 char hora[12];
 char data[12];
 
@@ -107,7 +111,7 @@ uint32_t rtc_to_seconds(RTC_TimeTypeDef *t, RTC_DateTypeDef *d) {
 // Interrupção do ADC
 #define N 167
 
-float period[N] = {0};
+float period[N] = { 0 };
 
 float v_ef_media = 0.0f;   // RMS por bloco fechado
 float v_ef_movel = 0.0f;   // RMS janela deslizante
@@ -118,65 +122,70 @@ float soma_movel = 0.0f;
 volatile int i = 0;
 volatile int amostras_bloco = 0;
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-    if (hadc->Instance == ADC1)
-    {
-        adc_debug = adc_raw[0];
-        adc_in_voltage = ((adc_debug * VREF) / (MAX_ADC)) - 1.5f;
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+	if (hadc->Instance == ADC1) {
+		adc_debug = adc_raw[0];
 
-        float novo_quadrado = adc_in_voltage * adc_in_voltage;
-        float antigo_quadrado = period[i] * period[i];
+		adc_in_voltage = ((adc_debug * VREF) / (MAX_ADC)) - 1.5f;
 
-        // ==============================
-        // 🔵 RMS DESLIZANTE (contínuo)
-        // ==============================
+		float novo_quadrado = adc_in_voltage * adc_in_voltage;
+		float antigo_quadrado = period[i] * period[i];
 
-        soma_movel -= antigo_quadrado;   // remove valor antigo
-        soma_movel += novo_quadrado;     // adiciona novo
-        v_ef_movel = sqrtf(soma_movel / (float)N);
+		// ==============================
+		// 🔵 RMS DESLIZANTE (contínuo)
+		// ==============================
 
-        // Atualiza buffer circular
-        period[i] = adc_in_voltage;
+		soma_movel -= antigo_quadrado;   // remove valor antigo
+		soma_movel += novo_quadrado;     // adiciona novo
+		v_ef_movel = sqrtf(soma_movel / (float) N);
 
-        // ==============================
-        // 🟢 RMS POR BLOCO FECHADO
-        // ==============================
+		// Atualiza buffer circular
+		period[i] = adc_in_voltage;
 
-        soma_bloco += novo_quadrado;
-        amostras_bloco++;
+		// ==============================
+		// 🟢 RMS POR BLOCO FECHADO
+		// ==============================
 
-        if (amostras_bloco >= N)
-        {
-            v_ef_media = sqrtf(soma_bloco / (float)N);
-            soma_bloco = 0.0f;
-            amostras_bloco = 0;
-        }
+		soma_bloco += novo_quadrado;
+		amostras_bloco++;
 
-        // Avança índice circular
-        i++;
-        if (i >= N)
-            i = 0;
-    }
+		if (amostras_bloco >= N) {
+			v_ef_media = sqrtf(soma_bloco / (float) N);
+			soma_bloco = 0.0f;
+			amostras_bloco = 0;
+		}
+
+		// Avança índice circular
+		i++;
+		if (i >= N) {
+			i = 0;
+		}
+
+		// Sistema de Colocar Data e Hora no Sistema quando Ocorre Interrupção
+		if ((v_ef_media < 0.956f) || (v_ef_movel < 0.956f)) {
+			uint32_t agora = rtc_to_seconds(&sTime, &sDate);
+			if (!afundamento) {
+				snprintf(historico[indexServer].data_e_hora,
+						sizeof(historico[indexServer].data_e_hora), "%s - %s",
+						data, hora);
+				inicio = agora;
+				afundamento = true;
+			}
+
+			snprintf(historico[indexServer].duracao,
+					sizeof(historico[indexServer].duracao), "%lu s",
+					agora - inicio);
+
+		} else if (afundamento) {
+			afundamento = false;
+			indexServer++;
+			if (indexServer >= 10) {
+				indexServer = 0;
+			}
+		}
+		/* ------------------------------------------------------- */
+	}
 }
-
-/*
- if(adc_in_voltage < 2.5f){
- uint32_t agora = rtc_to_seconds(&sTime, &sDate);
- if(!afundamento){
- snprintf(historico[i].data_e_hora, sizeof(historico[i].data_e_hora), "%s - %s", data, hora);
- inicio = agora;
- afundamento = true;
- }
-
- snprintf(historico[i].duracao, sizeof(historico[i].duracao), "%lu s", agora - inicio);
-
- }else if(afundamento){
- afundamento = false;
- i++;
- if (i >= 10) i = 0;
- }
- */
 
 // Interrupção do HTML
 u16_t SSI_Handler(int iIndex, char *pcInsert, int iInsertLen) {
@@ -258,6 +267,7 @@ int main(void) {
 				sDate.Year);
 		snprintf(hora, sizeof(hora), "%02d:%02d:%02d", sTime.Hours,
 				sTime.Minutes, sTime.Seconds);
+
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
